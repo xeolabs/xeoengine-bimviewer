@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title></title>
+
+    <style>
+        body {
+            margin: 0;
+            -moz-user-select: -moz-none;
+            -khtml-user-select: none;
+            -webkit-user-select: none;
+            background-color: white;
+        }
+    </style>
+
+    <link href="css/styles.css" rel="stylesheet"/>
+
+    <script type="text/javascript" src="lib/jquery/jquery-2.1.4.min.js"></script>
+
+    <script src="lib/bimserver/string.js"></script>
+    <script src="lib/bimserver/bimserverapibootstrap.js"></script>
+
+    <script src="lib/xeoengine/xeoengine.js"></script>
+
+</head>
+<body>
+
+
+<div id="info" class="infoLight">
+    BIM viewer experiment using BIMServer and <a href="http://xeoengine.org">xeoEngine</a>
+    <br>
+    <br>
+    Controls:
+    <br><br>
+    <ul>
+        <li>mouse drag, arrow keys - orbit</li>
+        <li>Z,X - pan forwards and backwards</li>
+        <li>A,D - pan left and right</li>
+        <li>W,S - pan up and down</li>
+        <li>1,2,3,4,5,6 - select axis-aligned view</li>
+        <li>click on entity to fly to it</li>
+        <li>shift-click entity to fly to its boundary</li>
+        <li>mouse wheel or '+' and '-' keys to zoom in and out</li>
+    </ul>
+</div>
+
+<script>
+
+    //-----------------------------------------------------------------------------------------------------------
+    // Create a simple XEO scene containing a torus
+    //-----------------------------------------------------------------------------------------------------------
+
+    var scene = new XEO.Scene();
+
+    var entity = new XEO.Entity(scene, {
+        geometry: new XEO.TorusGeometry(scene, {
+            radius: 1.0,
+            tube: 0.3,
+            radialSegments: 32,
+            tubeSegments: 24,
+            arc: Math.PI * 2.0
+        }),
+        material: new XEO.PhongMaterial(scene, {
+            diffuse: [0.9, 0.3, 0.9]
+        })
+    });
+
+    scene.camera.view.eye = [0, 0, -4];
+
+    new XEO.CameraControl(scene);
+
+//    scene.on("tick",
+//            function () {
+//
+//                var view = entity.scene.camera.view;
+//
+//                view.rotateEyeY(0.6);
+//                view.rotateEyeX(0.3);
+//            });
+
+
+    var api;
+
+    var dataPackets = [];
+    var numObjects = 0;
+
+    geometries = [];
+
+    //-----------------------------------------------------------------------------------------------------------
+    // Connect to a BIMServer
+    //-----------------------------------------------------------------------------------------------------------
+
+    connectToServer('http://thisisanexperimentalserver.com', prompt("user"), prompt("password"));
+
+    function connectToServer(serverURL, user, password) {
+
+        loadBimServerApi(serverURL, null,
+                function (_api) {
+
+                    api = _api;
+
+                    api.init(function (_api, serverInfo) {
+
+                        var errorMessage = serverInfo.errorMessage;
+                        var oid = serverInfo.oid;
+                        var rid = serverInfo.rid;
+                        var serverState = serverInfo.serverState; // Hopefully "RUNNING"
+                        var version = serverInfo.version;
+
+                        api.login(user, password, false,
+                                function () {
+
+                                    scene.log("Destroying viewer test object");
+                                    entity.destroy();
+
+                                    scene.log("Loading model");
+                                    loadModel();
+                                });
+                    });
+                });
+    }
+
+    function loadModel() {
+
+        var poid = 1441793;
+        var roid = 65539;
+        var schema = "ifc2x3tc1";
+
+        // Get the model (will be empty initially)
+        api.getModel(poid, roid, schema, false,
+                function (model) {
+
+                    // We will store the oids in this array
+                    var oids = [];
+
+                    // Get all objects of type IfcProduct, including subtypes
+                    model.getAllOfType("IfcProduct", true,
+                            function (object) {
+
+                                // Add the oid of the object to the array
+                                oids.push(object.oid);
+
+                            }).done(function () {
+
+                                // Triggers after all objects have loaded
+
+                                //    console.log("Objects loaded: " + oids);
+
+                                // Get serializer plugin
+
+                                api.getMessagingSerializerByPluginClassName(
+                                        "org.bimserver.serializers.binarygeometry.BinaryGeometryMessagingSerializerPlugin",
+                                        function (serializer) {
+
+                                            console.log("Loaded serializer plugin.");
+
+                                            // Call API to download objects
+
+                                            api.call("Bimsie1ServiceInterface", "downloadByOids", {
+                                                        roids: [roid],
+                                                        oids: oids,
+                                                        serializerOid: serializer.oid,
+                                                        sync: false,
+                                                        deep: false
+                                                    },
+                                                    function (topicId) {
+
+                                                        // API call issued
+
+                                                        var _topicId = topicId;
+
+                                                        var progressHandler = function (topicId, state) {
+                                                            //console.log(topicId, state, _topicId);
+                                                            if (topicId === _topicId) {
+                                                                if (state.title == "Done preparing") {
+                                                                    startDownload();
+                                                                }
+                                                                if (state.state == "completed") {
+                                                                    // console.log("Binary download complete.");
+                                                                    api.unregisterProgressHandler(topicId, progressHandler);
+                                                                }
+                                                            }
+                                                        };
+
+                                                        var startDownload = function () {
+                                                            //console.log("Starting binary download..");
+                                                            api.setBinaryDataListener(_topicId,
+                                                                    function (data) {
+                                                                        // console.log("A data packet has arrived.");
+                                                                        dataPackets.push(data);
+                                                                    });
+                                                            api.downloadViaWebsocket({
+                                                                longActionId: _topicId,
+                                                                topicId: _topicId
+                                                            });
+                                                        };
+
+                                                        api.registerProgressHandler(topicId,
+                                                                progressHandler,
+                                                                function () {
+                                                                    //console.log("progressHandler registered.");
+                                                                    // There was something missing here, especially with small models, the progress handler gets registered too late, and won't get called, so we do it manually, just in case
+                                                                    api.call("Bimsie1NotificationRegistryInterface", "getProgress", {
+                                                                        topicId: topicId
+                                                                    }, function (state) {
+                                                                        progressHandler(topicId, state);
+                                                                    });
+                                                                });
+                                                    },
+                                                    function (err) {
+                                                        var message = "Download failed: " + err.__type + ": " + err.message;
+                                                        console.error(message);
+                                                    });
+                                        });
+                            });
+                });
+
+        // Start processing responses as they appear in the data packet queue
+
+        var tick = scene.on("tick",
+                function () {
+
+                    var data = dataPackets.shift();
+
+                    while (data != null) {
+
+                        var stream = new BIMSURFER.utils.DataInputStreamReader(data);
+                        var channel = stream.readInt();
+                        var numMessages = stream.readInt();
+
+                        for (var i = 0; i < numMessages; i++) {
+
+                            var messageType = stream.readByte();
+
+                            if (messageType === 0) {
+                                readStart(stream);
+
+                            } else {
+                                readObject(stream, messageType);
+                            }
+                        }
+
+                        data = dataPackets.shift();
+                    }
+                });
+
+        var firstModel = true;
+
+        function readStart(stream) {
+
+            var start = stream.readUTF8();
+
+            if (start != "BGS") {
+                console.error("Stream does not start with BGS (" + start + ")");
+                return false;
+            }
+
+            var version = stream.readByte();
+
+            if (version != 4 && version != 5 && version != 6) {
+                console.error("Unimplemented version");
+                return false;
+
+            } else {
+                //this._version = version;
+            }
+
+            stream.align4();
+
+            var modelBounds = stream.readFloatArray(6);
+
+            modelBounds = {
+                min: {x: modelBounds[0], y: modelBounds[1], z: modelBounds[2]},
+                max: {x: modelBounds[3], y: modelBounds[4], z: modelBounds[5]}
+            };
+
+            // Bump Viewer origin to center the model
+
+            var center = [
+                (modelBounds.max.x + modelBounds.min.x) / 2,
+                (modelBounds.max.y + modelBounds.min.y) / 2,
+                (modelBounds.max.z + modelBounds.min.z) / 2
+            ];
+
+            camera.look = center;
+
+            if (firstModel) {
+
+                firstModel = false;
+
+                // Set up the Viewer's default Camera
+
+                //  var camera = viewer.camera;
+
+                //      camera.active = true; // Deactivates other Cameras
+
+                camera.up = [0, 0, 1];
+                camera.eye = [center[0] - 50, center[1] - 100, center[2]];
+
+                var diagonal = Math.sqrt(
+                        Math.pow(modelBounds.max.x - modelBounds.min.x, 2) +
+                        Math.pow(modelBounds.max.y - modelBounds.min.y, 2) +
+                        Math.pow(modelBounds.max.z - modelBounds.min.z, 2));
+
+                var far = diagonal * 5; // 5 being a guessed constant that should somehow coincide with the max zoom-out-factor
+
+                camera.far = far;
+                camera.near = far / 1000;
+                camera.fovy = 37.8493;
+            }
+
+            numObjects = stream.readInt();
+
+            //this._notifyProgress();
+        }
+
+        /**
+         * Reads an object from binary stream.
+         *
+         * @param stream The binary stream.
+         * @param geometryType Type of geometry to read.
+         * @private
+         */
+        function readObject(stream, geometryType) {
+
+            var type = stream.readUTF8();
+            var roid = stream.readLong(); // TODO: Needed?
+            var objectId = stream.readLong();
+
+            var geometryId;
+            var geometryIds = [];
+            var numGeometries;
+            var numParts;
+            var objectBounds;
+            var numIndices;
+            var indices;
+            var numPositions;
+            var positions;
+            var numNormals;
+            var normals;
+            var numColors;
+            var colors;
+
+            stream.align4();
+
+            var matrix = stream.readFloatArray(16);
+
+            if (geometryType == 1) {
+
+                objectBounds = stream.readFloatArray(6);
+                geometryId = stream.readLong();
+                numIndices = stream.readInt();
+                indices = stream.readIntArray(numIndices);
+                numPositions = stream.readInt();
+                positions = stream.readFloatArray(numPositions);
+                numNormals = stream.readInt();
+                normals = stream.readFloatArray(numNormals);
+                numColors = stream.readInt();
+                colors = stream.readFloatArray(numColors);
+
+                createGeometry(geometryId, positions, normals, colors, indices);
+
+                createEntity(roid, objectId, objectId, [geometryId], type, matrix);
+
+            } else if (geometryType == 2) {
+
+                geometryId = stream.readLong();
+
+                createEntity(roid, objectId, objectId, [geometryId], type, matrix);
+
+            } else if (geometryType == 3) {
+
+                numParts = stream.readInt();
+
+                for (var i = 0; i < numParts; i++) {
+
+                    // Object contains multiple geometries
+
+                    geometryId = stream.readLong();
+                    numIndices = stream.readInt();
+                    indices = stream.readIntArray(numIndices);
+                    numPositions = stream.readInt();
+                    positions = stream.readFloatArray(numPositions);
+                    numNormals = stream.readInt();
+                    normals = stream.readFloatArray(numNormals);
+                    numColors = stream.readInt();
+                    colors = stream.readFloatArray(numColors);
+
+                    createGeometry(geometryId, positions, normals, colors, indices);
+
+                    geometryIds.push(geometryId);
+                }
+
+                createEntity(roid, objectId, objectId, geometryIds, type, matrix);
+
+            } else if (geometryType == 4) {
+
+                // Object contains multiple instances of geometries
+
+                numGeometries = stream.readInt();
+                geometryIds = [];
+
+                for (var i = 0; i < numGeometries; i++) {
+                    geometryIds.push(stream.readLong());
+                }
+
+                createEntity(roid, objectId, objectId, geometryIds, type, matrix);
+
+            } else {
+
+                //this.warn("Unsupported geometry type: " + geometryType);
+                return;
+            }
+        }
+
+        function createGeometry(geometryId, positions, normals, colors, indices) {
+
+            //console.log("createGeometry " + geometryId);
+
+            new XEO.Geometry(scene, {
+                id: geometryId,
+                primitive: "triangles",
+                positions: positions,
+                normals: normals,
+                colors: colors,
+                indices: indices
+            });
+        }
+
+        function createEntity(roid, oid, objectId, geometryIds, type, matrix) {
+
+            //console.log("createEntity " + oid);
+
+            // Until xeoEngine supports multiple Geometries per Entity,
+            // we need to create a separate Entity for each Geometry
+
+            for (var i = 0, len = geometryIds.length; i < len; i++) {
+
+                new XEO.Entity(scene, {
+                    meta: { // Arbitrary user-defined metadata
+                        roid: roid,
+                        oid: oid,
+                        type: type
+                    },
+                    geometry: geometryIds[i],
+                    transform: new XEO.Transform(scene, {
+                        matrix: matrix
+                    })
+                });
+            }
+        }
+    }
+
+</script>
+
+</body>
+</html>
