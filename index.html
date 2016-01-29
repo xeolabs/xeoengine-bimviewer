@@ -70,14 +70,14 @@
 
     new XEO.CameraControl(scene);
 
-//    scene.on("tick",
-//            function () {
-//
-//                var view = entity.scene.camera.view;
-//
-//                view.rotateEyeY(0.6);
-//                view.rotateEyeX(0.3);
-//            });
+    //    scene.on("tick",
+    //            function () {
+    //
+    //                var view = entity.scene.camera.view;
+    //
+    //                view.rotateEyeY(0.6);
+    //                view.rotateEyeX(0.3);
+    //            });
 
 
     var api;
@@ -283,7 +283,10 @@
                 (modelBounds.max.z + modelBounds.min.z) / 2
             ];
 
-            camera.look = center;
+            var view = scene.camera.view; // Viewing transform
+            var project = scene.camera.project; // Projection transform
+
+            view.look = center;
 
             if (firstModel) {
 
@@ -291,12 +294,8 @@
 
                 // Set up the Viewer's default Camera
 
-                //  var camera = viewer.camera;
-
-                //      camera.active = true; // Deactivates other Cameras
-
-                camera.up = [0, 0, 1];
-                camera.eye = [center[0] - 50, center[1] - 100, center[2]];
+                view.up = [0, 0, 1];
+                view.eye = [center[0] - 50, center[1] - 100, center[2]];
 
                 var diagonal = Math.sqrt(
                         Math.pow(modelBounds.max.x - modelBounds.min.x, 2) +
@@ -305,9 +304,9 @@
 
                 var far = diagonal * 5; // 5 being a guessed constant that should somehow coincide with the max zoom-out-factor
 
-                camera.far = far;
-                camera.near = far / 1000;
-                camera.fovy = 37.8493;
+                project.far = far;
+                project.near = far / 1000;
+                project.fovy = 37.8493;
             }
 
             numObjects = stream.readInt();
